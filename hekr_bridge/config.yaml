@@ -1,0 +1,49 @@
+name: "KKT Kolbe Hekr Bridge"
+version: "1.0.0"
+slug: "hekr_bridge"
+description: "MITM proxy bridging a KKT KOLBE Hekr range hood to Home Assistant via MQTT"
+url: "https://github.com/markobel/kkt-kolbe-homeassistant"
+arch:
+  - amd64
+  - aarch64
+  - armv7
+  - armhf
+  - i386
+init: false
+host_network: true
+startup: application
+boot: auto
+options:
+  hekr_dev_tid: ""
+  hekr_ctrl_key: ""
+  hekr_cloud_host: "hub.hekreu.me"
+  hekr_cloud_port: 83
+  hekr_listen_port: 83
+  mqtt_host: "localhost"
+  mqtt_port: 1883
+  mqtt_user: ""
+  mqtt_pass: ""
+  mqtt_topic_base: "cappa/kkt"
+  ha_device_id: "cappa_kkt_kolbe"
+  ha_device_name: "KKT KOLBE Hood"
+  cmd_power: 2
+  cmd_light: 3
+  cmd_speed: 4
+  cmd_color: 7
+schema:
+  hekr_dev_tid: "str"
+  hekr_ctrl_key: "str"
+  hekr_cloud_host: "str"
+  hekr_cloud_port: "port"
+  hekr_listen_port: "port"
+  mqtt_host: "str"
+  mqtt_port: "port"
+  mqtt_user: "str"
+  mqtt_pass: "password"
+  mqtt_topic_base: "str"
+  ha_device_id: "str"
+  ha_device_name: "str"
+  cmd_power: "int"
+  cmd_light: "int"
+  cmd_speed: "int"
+  cmd_color: "int"
