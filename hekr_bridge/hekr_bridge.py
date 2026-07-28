@@ -22,6 +22,7 @@ import logging
 import os
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 
@@ -374,7 +375,7 @@ def on_mqtt_message(client, userdata, msg):
 def mqtt_start():
     client = mqtt.Client(
         mqtt.CallbackAPIVersion.VERSION2,
-        client_id="hekr-bridge",
+        client_id=f"hekr-bridge-{uuid.uuid4().hex[:8]}",
         protocol=mqtt.MQTTv311,
     )
     if MQTT_USER:
