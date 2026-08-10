@@ -50,6 +50,7 @@ TOPIC_CMD_LIGHT = f"{TOPIC_BASE}/light/set"
 TOPIC_CMD_SPEED = f"{TOPIC_BASE}/speed/set"
 TOPIC_CMD_RGB_STATE = f"{TOPIC_BASE}/rgb/set"       # ON/OFF for the RGB light
 TOPIC_CMD_RGB_COLOR = f"{TOPIC_BASE}/rgb/rgb/set"   # "R,G,B" string from HA colour picker
+TOPIC_CMD_DEBUG_RAW = f"{TOPIC_BASE}/debug/raw/set"  # hex string, for protocol testing
 
 HA_DISCOVERY_PREFIX = os.environ.get("HA_DISCOVERY_PREFIX", "homeassistant")
 DEVICE_ID = os.environ.get("HA_DEVICE_ID", "cappa_kkt_kolbe")
@@ -87,6 +88,11 @@ class Session:
         self.cloud_writer = None
         self.last_state = {}
         self.last_rgb_sent = (255, 255, 255)
+        # Separate from last_rgb_sent: only updated when a genuine (non-black)
+        # colour is set, so a plain "turn on" (no colour specified) can
+        # restore the actual last colour rather than falling back to a
+        # generic default when the last literal command was black/off.
+        self.last_nonzero_rgb = (255, 255, 255)
         self.injected_msg_id = 90000
         self.connected_since = None
         self.mqtt_client = None
@@ -193,7 +199,7 @@ def mqtt_publish_discovery():
                 "name": "RGB Light",
                 "unique_id": f"{DEVICE_ID}_rgb",
                 "state_topic": TOPIC_STATE,
-                "state_value_template": "{{ 'ON' if value_json.rgb_on else 'OFF' }}",
+                "state_value_template": "{{ 'OFF' if (value_json.r == 0 and value_json.g == 0 and value_json.b == 0) else 'ON' }}",
                 "command_topic": TOPIC_CMD_RGB_STATE,
                 "rgb_state_topic": TOPIC_STATE,
                 "rgb_value_template": "{{ value_json.r }},{{ value_json.g }},{{ value_json.b }}",
@@ -321,6 +327,7 @@ def on_mqtt_connect(client, userdata, flags, rc, properties=None):
             (TOPIC_CMD_SPEED, 1),
             (TOPIC_CMD_RGB_STATE, 1),
             (TOPIC_CMD_RGB_COLOR, 1),
+            (TOPIC_CMD_DEBUG_RAW, 1),
         ])
         mqtt_publish_discovery()
         if session.dev_writer is not None:
@@ -354,10 +361,19 @@ def on_mqtt_message(client, userdata, msg):
                     await inject_command(CMD_SPEED, value)
             elif topic == TOPIC_CMD_RGB_STATE:
                 if payload.upper() == "OFF":
-                    r, g, b = session.last_rgb_sent
-                    await inject_rgb(0x01, r, g, b)
+                    # mode=0x01 was assumed to be an "off" flag by symmetry with
+                    # mode=0x02, but logs show the device never once echoed a
+                    # state change in response to it. Confirmed empirically
+                    # (2026-08-10) that setting colour to black (0,0,0) via the
+                    # same mode=0x02 command that already works reliably is the
+                    # real way to turn the RGB light off.
+                    await inject_rgb(0x02, 0, 0, 0)
                 else:
-                    r, g, b = session.last_rgb_sent
+                    # Restore the last genuine colour (not last_rgb_sent, which
+                    # would just be black if the light was previously turned
+                    # off) so a plain "turn on" brings back what was actually
+                    # showing before, rather than needing the colour re-picked.
+                    r, g, b = session.last_nonzero_rgb
                     await inject_rgb(0x02, r, g, b)
             elif topic == TOPIC_CMD_RGB_COLOR:
                 try:
@@ -366,6 +382,8 @@ def on_mqtt_message(client, userdata, msg):
                     log.error(f"Bad RGB payload: {payload!r}")
                     return
                 await inject_rgb(0x02, r, g, b)
+            elif topic == TOPIC_CMD_DEBUG_RAW:
+                await inject_raw(payload.strip())
         except Exception as e:
             log.error(f"MQTT cmd handling error: {e}")
 
@@ -445,6 +463,13 @@ def analyze(direction, msg):
                 except Exception:
                     pass
             session.last_state = decoded
+            r, g, b = decoded.get("r", 0), decoded.get("g", 0), decoded.get("b", 0)
+            if (r, g, b) != (0, 0, 0):
+                # Keep this in sync with reality regardless of source - the
+                # panel's own button presses report state here too, not just
+                # commands we send ourselves, so "turn on" restores whatever
+                # colour was actually last showing, however it got set.
+                session.last_nonzero_rgb = (r, g, b)
             mqtt_publish_state()
 
 
@@ -517,7 +542,10 @@ async def inject_command(cmd_id, value):
 async def inject_rgb(mode, r, g, b):
     """Inject an RGB colour command (confirmed cmdId 0x07, 4-byte payload).
 
-    mode: 0x02 = RGB on with given colour, 0x01 = RGB off.
+    mode: 0x02 = set RGB to the given colour (this is also how the light is
+    turned "off" in practice, by setting colour to black - a dedicated
+    off-flag was tried (mode=0x01) but the device never once acknowledged it
+    across many attempts, so it's treated as non-functional).
     r, g, b: 0-255 each.
     """
     if session.dev_writer is None:
@@ -526,6 +554,8 @@ async def inject_rgb(mode, r, g, b):
     r, g, b = max(0, min(255, int(r))), max(0, min(255, int(g))), max(0, min(255, int(b)))
     if mode == 0x02:
         session.last_rgb_sent = (r, g, b)
+        if (r, g, b) != (0, 0, 0):
+            session.last_nonzero_rgb = (r, g, b)
     session.injected_msg_id += 1
     seq = session.injected_msg_id & 0xFF
     body = [0x48, 0, 0x02, seq, CMD_COLOR, mode, r, g, b]
@@ -612,8 +642,7 @@ async def cli_repl():
             elif cmd == "rgb":
                 await inject_rgb(0x02, int(parts[1]), int(parts[2]), int(parts[3]))
             elif cmd == "rgboff":
-                r, g, b = session.last_rgb_sent
-                await inject_rgb(0x01, r, g, b)
+                await inject_rgb(0x02, 0, 0, 0)
             elif cmd == "state":
                 print(json.dumps(session.last_state, indent=2, default=str))
             elif cmd == "conn":

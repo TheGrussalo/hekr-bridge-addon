@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.0.2
+
+### Fixed
+- **RGB "off" did nothing.** The dedicated off-flag (`mode=0x01`) was assumed
+  to work by symmetry with the working "on" flag (`mode=0x02`), but logs
+  showed the device never once acknowledged it. "Off" now sets colour to
+  black (`0,0,0`) via the same `mode=0x02` command that's confirmed reliable.
+  (A genuine non-colour "off" command may still exist — see the new debug
+  topic below, added to help track it down properly.)
+- **Turning back on required re-picking a colour.** A plain "on" (no colour
+  attached) now restores the last real colour automatically, instead of
+  needing the colour set explicitly every time.
+- **Colour memory now works regardless of source.** Previously only colours
+  set from Home Assistant were remembered; colours set via the hood's own
+  physical panel are now tracked too, so "on" restores the right colour no
+  matter which one last changed it.
+
+### Added
+- New debug MQTT topic (`cappa/kkt/debug/raw/set`) for injecting raw test
+  frames directly — restores the ability to probe unmapped commands now that
+  the bridge runs as a Supervisor add-on rather than an interactive Docker
+  container.
+
 ## 1.0.1
 
 ### Fixed
