@@ -51,6 +51,7 @@ TOPIC_CMD_SPEED = f"{TOPIC_BASE}/speed/set"
 TOPIC_CMD_RGB_STATE = f"{TOPIC_BASE}/rgb/set"       # ON/OFF for the RGB light
 TOPIC_CMD_RGB_COLOR = f"{TOPIC_BASE}/rgb/rgb/set"   # "R,G,B" string from HA colour picker
 TOPIC_CMD_DEBUG_RAW = f"{TOPIC_BASE}/debug/raw/set"  # hex string, for protocol testing
+TOPIC_CMD_TIME_SYNC = f"{TOPIC_BASE}/time/sync/set"   # any payload triggers a clock sync
 
 HA_DISCOVERY_PREFIX = os.environ.get("HA_DISCOVERY_PREFIX", "homeassistant")
 DEVICE_ID = os.environ.get("HA_DEVICE_ID", "cappa_kkt_kolbe")
@@ -64,6 +65,12 @@ CMD_SPEED = int(os.environ.get("CMD_SPEED", "4"))   # 0x04
 # [mode, R, G, B]. mode=0x02 turns RGB on with the given colour, mode=0x01 turns
 # it off. Status frame reports the current colour back in bytes 11/12/13.
 CMD_COLOR = int(os.environ.get("CMD_COLOR", "7"))   # 0x07
+# Clock/time-of-day, confirmed 2026-08-11: cmdId 0x08, plain 3-byte payload
+# [hour, minute, second] with a real computed checksum (the reference
+# implementation this was derived from used a hardcoded 0x00 checksum, which
+# does not work on this hood). Not reported anywhere in the status frame, so
+# there's no way to read the device's current clock value back - only set it.
+CMD_TIME = int(os.environ.get("CMD_TIME", "8"))     # 0x08
 
 LOG_DIR = Path(os.environ.get("LOG_DIR", "/data"))
 LOG_DIR.mkdir(exist_ok=True)
@@ -210,6 +217,17 @@ def mqtt_publish_discovery():
             },
         ),
         (
+            f"{HA_DISCOVERY_PREFIX}/button/{DEVICE_ID}/time_sync/config",
+            {
+                "name": "Sync Clock",
+                "unique_id": f"{DEVICE_ID}_time_sync",
+                "command_topic": TOPIC_CMD_TIME_SYNC,
+                "icon": "mdi:clock-check-outline",
+                "device": device,
+                "availability": availability,
+            },
+        ),
+        (
             f"{HA_DISCOVERY_PREFIX}/switch/{DEVICE_ID}/power/config",
             {
                 "name": "Power",
@@ -328,6 +346,7 @@ def on_mqtt_connect(client, userdata, flags, rc, properties=None):
             (TOPIC_CMD_RGB_STATE, 1),
             (TOPIC_CMD_RGB_COLOR, 1),
             (TOPIC_CMD_DEBUG_RAW, 1),
+            (TOPIC_CMD_TIME_SYNC, 1),
         ])
         mqtt_publish_discovery()
         if session.dev_writer is not None:
@@ -384,6 +403,22 @@ def on_mqtt_message(client, userdata, msg):
                 await inject_rgb(0x02, r, g, b)
             elif topic == TOPIC_CMD_DEBUG_RAW:
                 await inject_raw(payload.strip())
+            elif topic == TOPIC_CMD_TIME_SYNC:
+                payload_stripped = payload.strip()
+                if payload_stripped and ":" in payload_stripped:
+                    # Explicit "HH:MM:SS" (or "HH:MM") override, useful if the
+                    # add-on container's own timezone doesn't match the hood's.
+                    try:
+                        parts = [int(x) for x in payload_stripped.split(":")]
+                        h, m = parts[0], parts[1]
+                        s = parts[2] if len(parts) > 2 else 0
+                    except Exception:
+                        log.error(f"Bad time sync payload: {payload_stripped!r}")
+                        return
+                else:
+                    now = datetime.now()
+                    h, m, s = now.hour, now.minute, now.second
+                await inject_time(h, m, s)
         except Exception as e:
             log.error(f"MQTT cmd handling error: {e}")
 
@@ -580,6 +615,41 @@ async def inject_rgb(mode, r, g, b):
     return True
 
 
+async def inject_time(hour, minute, second):
+    """Inject a clock-set command (confirmed cmdId 0x08, 3-byte payload).
+
+    [hour, minute, second], each 0-255 but expected in normal time ranges.
+    No confirmation is possible - the clock is never reported in the status
+    frame, so this is fire-and-forget. Verify visually on the hood's display.
+    """
+    if session.dev_writer is None:
+        log.warning("Device not connected; time command ignored")
+        return False
+    hour, minute, second = int(hour) & 0xFF, int(minute) & 0xFF, int(second) & 0xFF
+    session.injected_msg_id += 1
+    seq = session.injected_msg_id & 0xFF
+    body = [0x48, 0, 0x02, seq, CMD_TIME, hour, minute, second]
+    body[1] = len(body) + 1
+    chk = sum(body) & 0xFF
+    raw = bytes(body + [chk]).hex().upper()
+    msg = {
+        "msgId": session.injected_msg_id,
+        "action": "appSend",
+        "params": {
+            "devTid": DEV_TID,
+            "ctrlKey": CTRL_KEY,
+            "appTid": "injected-mitm",
+            "data": {"raw": raw},
+        },
+    }
+    line = json.dumps(msg, separators=(",", ":")) + "\n"
+    log.info(f">>> INJECT TIME {hour:02d}:{minute:02d}:{second:02d} raw={raw}")
+    log_msg("INJECTED->dev", msg)
+    session.dev_writer.write(line.encode())
+    await session.dev_writer.drain()
+    return True
+
+
 async def inject_raw(raw_hex):
     if session.dev_writer is None:
         return False
@@ -643,6 +713,8 @@ async def cli_repl():
                 await inject_rgb(0x02, int(parts[1]), int(parts[2]), int(parts[3]))
             elif cmd == "rgboff":
                 await inject_rgb(0x02, 0, 0, 0)
+            elif cmd == "time":
+                await inject_time(int(parts[1]), int(parts[2]), int(parts[3]) if len(parts) > 3 else 0)
             elif cmd == "state":
                 print(json.dumps(session.last_state, indent=2, default=str))
             elif cmd == "conn":
