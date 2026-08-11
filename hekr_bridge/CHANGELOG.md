@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.1.0
+
+### Added
+- **Clock sync support.** New "Sync Clock" button entity sets the hood's
+  clock to the current time. Confirmed protocol: `cmdId 0x08`, 3-byte
+  payload `[hour, minute, second]` with a properly computed checksum (a
+  reference implementation this was derived from used a hardcoded `0x00`
+  checksum, which does not work on this hood).
+  - The clock is fire-and-forget — it's never reported back in the status
+    frame, so there's no way to read the hood's current time, only set it.
+  - New topic `cappa/kkt/time/sync/set`: any payload syncs to the add-on's
+    own system time; an explicit `"HH:MM:SS"` (or `"HH:MM"`) payload
+    overrides this, useful if the add-on container's timezone doesn't
+    match the hood's.
+  - New REPL command for testing: `time HH MM SS`.
+
+### Investigated, not resolved
+- **cmdId 0x06** remains unidentified. A community protocol table suggested
+  it may correspond to a filter/"cleaning" reset, but every tested payload
+  shape (bare, 1-byte value, extended 2-byte) got no response. Since a
+  "clear filter reminder" command might only produce a visible effect while
+  a filter warning is actually active, this is inconclusive rather than
+  ruled out — worth revisiting once the filter-clean indicator next appears.
+
 ## 1.0.2
 
 ### Fixed
