@@ -410,31 +410,32 @@ def on_mqtt_message(client, userdata, msg):
                 if 0 <= value <= 4:
                     await inject_command(CMD_SPEED, value)
             elif topic == TOPIC_CMD_RGB_STATE:
-                # Genuine on/off, confirmed working 2026-08-13: plain cmdId 0x03
-                # (the same "Light" command used for the white channel) cleanly
-                # toggles the RGB status flag (status byte 8) between real on
-                # and real off - including the physical panel indicator - with
-                # no fan involvement, *provided* the current colour was last
-                # set via mode=0x00 rather than mode=0x02 (see inject_rgb and
-                # TOPIC_CMD_RGB_COLOR below). The device remembers its last
-                # colour internally, so no need to resend R/G/B here at all.
-                await inject_command(CMD_LIGHT, 1 if payload.upper() == "ON" else 0)
+                # Fully and finally verified 2026-08-13, after a couple of
+                # incorrect conclusions along the way - see CHANGELOG.
+                # mode=0x02 and mode=0x00 (both cmdId 0x07) are a clean,
+                # symmetric on/off pair: mode=0x02 genuinely displays the
+                # given colour, mode=0x00 genuinely turns the RGB output off
+                # (status byte 8 -> 1, confirmed dark including the physical
+                # panel indicator) - sent DIRECTLY, with no reset/fan/Light
+                # involvement needed either way. Light (cmdId 0x03) turned
+                # out to be a complete red herring for RGB - it only ever
+                # controls the independent white channel.
+                if payload.upper() == "OFF":
+                    r, g, b = session.last_rgb_sent
+                    await inject_rgb(0x00, r, g, b)
+                else:
+                    r, g, b = session.last_rgb_sent
+                    if (r, g, b) == (0, 0, 0):
+                        r, g, b = 255, 255, 255
+                    await inject_rgb(0x02, r, g, b)
             elif topic == TOPIC_CMD_RGB_COLOR:
-                # Setting a *new* colour, confirmed working 2026-08-13:
-                # mode=0x00 stores the colour and leaves the device in the
-                # genuine "off" state (status byte 8 = 1) rather than forcing
-                # it "on and stuck" the way mode=0x02 does. Following up with
-                # a plain Light-on (cmdId 0x03) then displays that colour
-                # immediately, while keeping future Light on/off toggles
-                # clean and fan-free - unlike mode=0x02, which permanently
-                # "stickies" the RGB flag until a full power-cycle reset.
+                # mode=0x02 directly - genuinely displays the given colour.
                 try:
                     r, g, b = (int(x) for x in payload.split(","))
                 except Exception:
                     log.error(f"Bad RGB payload: {payload!r}")
                     return
-                await inject_rgb(0x00, r, g, b)
-                await inject_command(CMD_LIGHT, 1)
+                await inject_rgb(0x02, r, g, b)
             elif topic == TOPIC_CMD_DEBUG_RAW:
                 await inject_raw(payload.strip())
             elif topic == TOPIC_CMD_TIME_SYNC:
@@ -534,6 +535,10 @@ def analyze(direction, msg):
                 except Exception:
                     pass
             session.last_state = decoded
+            if decoded.get("byte8") == 2:
+                r, g, b = decoded.get("r", 0), decoded.get("g", 0), decoded.get("b", 0)
+                if (r, g, b) != (0, 0, 0):
+                    session.last_rgb_sent = (r, g, b)
             mqtt_publish_state()
 
 
@@ -606,22 +611,22 @@ async def inject_command(cmd_id, value):
 async def inject_rgb(mode, r, g, b):
     """Inject an RGB colour command (confirmed cmdId 0x07, 4-byte payload).
 
-    mode byte semantics, fully confirmed 2026-08-13:
-      0x00 = store this colour, leave the device genuinely OFF (status byte
-             8 -> 1). This is the correct way to change colour - it does not
-             "stick" the RGB flag on, so a following cmdId 0x03 (Light)
-             on/off toggle continues to work cleanly and fan-free
-             afterwards.
-      0x02 = store this colour AND turn on (status byte 8 -> 2). Using this
-             to *change* colour "stickies" the RGB flag - afterwards, plain
-             Light on/off (cmdId 0x03) stops working until a full
-             power-cycle reset. Fine to use for the initial "turn on now"
-             half of a colour change (see TOPIC_CMD_RGB_COLOR), just not
-             for storing the colour itself.
+    mode byte semantics, fully and finally verified 2026-08-13, after a
+    couple of incorrect conclusions along the way - see CHANGELOG:
+      0x02 = ON. Genuinely drives the RGB hardware, displaying the given
+             colour immediately (status byte 8 -> 2).
+      0x00 = OFF. Genuinely turns the RGB output off - confirmed dark,
+             including the physical panel indicator (status byte 8 -> 1) -
+             while remembering the given colour for next time. Works when
+             sent directly at any time, no reset or fan involvement needed.
+             mode=0x02 and mode=0x00 are a clean, symmetric on/off pair.
       0x01 = never acknowledged by the device across dozens of tests, in
-             any context. Not the "off" flag it was originally assumed to
-             be by symmetry with 0x02; treated as non-functional.
+             any context.
       0x03 = accepted, behaves identically to 0x02 in every test so far.
+
+    Light (cmdId 0x03) is a separate, fully independent channel (the white
+    LED) - it does not affect RGB in either direction, and is not involved
+    in RGB on/off at all.
 
     r, g, b: 0-255 each.
     """
@@ -750,10 +755,10 @@ async def cli_repl():
             elif cmd == "raw":
                 await inject_raw(parts[1])
             elif cmd == "rgb":
-                await inject_rgb(0x00, int(parts[1]), int(parts[2]), int(parts[3]))
-                await inject_command(CMD_LIGHT, 1)
+                await inject_rgb(0x02, int(parts[1]), int(parts[2]), int(parts[3]))
             elif cmd == "rgboff":
-                await inject_command(CMD_LIGHT, 0)
+                r, g, b = session.last_rgb_sent
+                await inject_rgb(0x00, r, g, b)
             elif cmd == "time":
                 await inject_time(int(parts[1]), int(parts[2]), int(parts[3]) if len(parts) > 3 else 0)
             elif cmd == "filterreset":
