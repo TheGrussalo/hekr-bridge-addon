@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.2.0
+
+### Added
+- **Filter/clean reminder support, fully solved.** After weeks of this being
+  an open investigation, both the indicator and the reset command are now
+  confirmed and built in:
+  - **"Filter Needs Cleaning"** binary sensor — reads status bytes 10 and 14
+    (previously unmapped; both flip together, `0` -> `1`, when the physical
+    panel's clean-filter indicator lights up). Confirmed against a real,
+    organically-triggered filter warning on 2026-08-13.
+  - **"Reset Filter Reminder"** button — sends `cmdId 0x06`, a single `0x00`
+    byte. Confirmed to immediately clear both indicator bytes and the
+    physical panel icon on the same real warning.
+  - `cmdId 0x06` had been tested extensively in earlier sessions (bare,
+    1-byte, and extended payloads) with no observable effect every time.
+    That wasn't a wrong guess — that command only produces a visible result
+    while a filter warning is genuinely active, and every earlier test ran
+    with no warning present. Retesting the exact same command against a real
+    warning confirmed it immediately.
+  - New REPL command for testing: `filterreset`.
+
+
 ## 1.1.0
 
 ### Added
