@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.4.0
+
+### Fixed
+- **Genuine RGB off, correctly solved this time.** The previous release
+  (1.5.0) concluded that `mode=0x00` plus a `cmdId 0x03` (Light) toggle
+  gave clean, fan-free RGB control. That was wrong — the status flag
+  genuinely toggled cleanly, but the colour was never actually visible on
+  that path, only confirmed by properly checking the physical hood rather
+  than trusting the status byte alone.
+  - **Final, verified design:** `mode=0x02` (cmdId 0x07) genuinely drives
+    the RGB hardware — turning on always sends this with the target
+    colour. `mode=0x00` genuinely turns RGB output off, confirmed dark
+    including the physical panel indicator, while remembering the colour
+    for next time. Both are sent directly, with **no reset, no fan
+    involvement, and no black-colour workaround needed at any point.**
+  - **`cmdId 0x03` (Light) is not involved in RGB on/off at all** — it
+    turned out to be a red herring throughout this investigation; it only
+    ever controls the independent white channel, in both directions.
+  - On/off status shown in Home Assistant reads directly from status byte
+    8 again, which is fully reliable under this design.
+  - Removed: the fan-blip/Power-off reset logic and its associated
+    adaptive fallback-to-black handling introduced in 1.5.0 — none of it
+    is needed.
+
+This closes out the RGB on/off investigation for real this time, confirmed
+by direct visual checks against the physical hood at every step, including
+two full repeated on/off cycles with no reset in between. No known
+limitations remain in the project.
+
 ## 1.3.0
 
 ### Fixed
