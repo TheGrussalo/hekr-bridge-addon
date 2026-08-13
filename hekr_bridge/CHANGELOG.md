@@ -1,5 +1,38 @@
 # Changelog
 
+## 1.3.0
+
+### Fixed
+- **Genuine RGB off, fully solved — no more black-colour workaround.** After
+  extensive investigation (including a systematic sweep testing every
+  candidate command ID as a possible "unlock" step, per user's excellent
+  suggestion to test whether unmapped commands sent *after* a colour change
+  specifically unlocked Light-off, rather than just testing them in
+  isolation), the actual missing piece turned out to be the colour-set
+  command's own `mode` byte:
+  - `mode=0x00` stores a colour and leaves the device **genuinely off**
+    (status byte 8 -> 1, physical panel indicator included) — this had
+    previously been assumed to behave identically to `mode=0x02` and was
+    never distinguished from it.
+  - `mode=0x02` stores a colour *and* turns it on, but doing so permanently
+    "stickies" the RGB status flag — after using it, plain Light on/off
+    (`cmdId 0x03`) silently stops cascading RGB, which is what drove the
+    whole earlier black-colour/fan-blip investigation in the first place.
+  - New colour-change sequence: `mode=0x00` (store) immediately followed by
+    `cmdId 0x03` value `1` (display). From then on, plain on/off uses
+    `cmdId 0x03` alone — no fan involvement, no colour resend needed (the
+    device remembers its own last colour).
+  - **Removed entirely:** the black-colour (`0,0,0`) off workaround, the
+    fan-blip/Power-off reset trick, and the associated
+    `last_nonzero_rgb`/"sticky colour" tracking code — none of it is needed
+    anymore.
+  - On/off status shown in Home Assistant now reads directly from status
+    byte 8 again (safe now that it's reliably and predictably toggled),
+    instead of being inferred from whether the colour is black.
+
+This closes out the last open item from the entire reverse-engineering
+project. No known limitations remain.
+
 ## 1.2.0
 
 ### Added
