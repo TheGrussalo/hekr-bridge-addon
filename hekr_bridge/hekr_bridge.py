@@ -52,6 +52,7 @@ TOPIC_CMD_RGB_STATE = f"{TOPIC_BASE}/rgb/set"       # ON/OFF for the RGB light
 TOPIC_CMD_RGB_COLOR = f"{TOPIC_BASE}/rgb/rgb/set"   # "R,G,B" string from HA colour picker
 TOPIC_CMD_DEBUG_RAW = f"{TOPIC_BASE}/debug/raw/set"  # hex string, for protocol testing
 TOPIC_CMD_TIME_SYNC = f"{TOPIC_BASE}/time/sync/set"   # any payload triggers a clock sync
+TOPIC_CMD_FILTER_RESET = f"{TOPIC_BASE}/filter/reset/set"  # any payload triggers filter reset
 
 HA_DISCOVERY_PREFIX = os.environ.get("HA_DISCOVERY_PREFIX", "homeassistant")
 DEVICE_ID = os.environ.get("HA_DEVICE_ID", "cappa_kkt_kolbe")
@@ -71,6 +72,13 @@ CMD_COLOR = int(os.environ.get("CMD_COLOR", "7"))   # 0x07
 # does not work on this hood). Not reported anywhere in the status frame, so
 # there's no way to read the device's current clock value back - only set it.
 CMD_TIME = int(os.environ.get("CMD_TIME", "8"))     # 0x08
+# Filter/clean reminder reset, confirmed 2026-08-13: cmdId 0x06, plain 1-byte
+# payload, value 0x00. Immediately clears status bytes 10 and 14 (the filter
+# reminder flag) when the reminder is active. Previously unmapped despite
+# extensive earlier testing; only produces an observable effect while the
+# reminder is genuinely active, which is why earlier blind tests looked like
+# no-ops.
+CMD_FILTER_RESET = int(os.environ.get("CMD_FILTER_RESET", "6"))   # 0x06
 
 LOG_DIR = Path(os.environ.get("LOG_DIR", "/data"))
 LOG_DIR.mkdir(exist_ok=True)
@@ -128,7 +136,9 @@ def decode_raw(raw_hex):
       [0]=0x48 magic  [1]=len  [2]=frame type  [3]=seq
       [4]=?  [5]=?  [6]=light(0/1)  [7]=speed(0..4)
       [8]=RGB mode (0=unset/1=off/2=on)
-      [9]=?  [10]=?  [11]=R  [12]=G  [13]=B  [14]=?
+      [9]=?  [10]=filter reminder (0/1, confirmed 2026-08-13)
+      [11]=R  [12]=G  [13]=B
+      [14]=filter reminder, mirrors [10] (confirmed 2026-08-13)
       [15]=? (transient change flag)  [16]=checksum
     """
     if not raw_hex or len(raw_hex) < 34:
@@ -151,6 +161,7 @@ def decode_raw(raw_hex):
         "r": b[11],
         "g": b[12],
         "b": b[13],
+        "filter_needs_cleaning": b[10] == 1,
         "filter_block": b[9:15].hex(),
         "byte15": b[15],
         "checksum": b[16],
@@ -160,7 +171,7 @@ def decode_raw(raw_hex):
 
 def state_diff(new):
     diffs = []
-    for k in ("byte4", "byte5", "light", "speed", "byte8", "r", "g", "b", "byte15", "filter_block"):
+    for k in ("byte4", "byte5", "light", "speed", "byte8", "r", "g", "b", "byte15", "filter_needs_cleaning", "filter_block"):
         old_v = session.last_state.get(k)
         new_v = new.get(k)
         if old_v != new_v:
@@ -223,6 +234,30 @@ def mqtt_publish_discovery():
                 "unique_id": f"{DEVICE_ID}_time_sync",
                 "command_topic": TOPIC_CMD_TIME_SYNC,
                 "icon": "mdi:clock-check-outline",
+                "device": device,
+                "availability": availability,
+            },
+        ),
+        (
+            f"{HA_DISCOVERY_PREFIX}/binary_sensor/{DEVICE_ID}/filter_needs_cleaning/config",
+            {
+                "name": "Filter Needs Cleaning",
+                "unique_id": f"{DEVICE_ID}_filter_needs_cleaning",
+                "state_topic": TOPIC_STATE,
+                "value_template": "{{ 'ON' if value_json.filter_needs_cleaning else 'OFF' }}",
+                "device_class": "problem",
+                "icon": "mdi:air-filter",
+                "device": device,
+                "availability": availability,
+            },
+        ),
+        (
+            f"{HA_DISCOVERY_PREFIX}/button/{DEVICE_ID}/filter_reset/config",
+            {
+                "name": "Reset Filter Reminder",
+                "unique_id": f"{DEVICE_ID}_filter_reset",
+                "command_topic": TOPIC_CMD_FILTER_RESET,
+                "icon": "mdi:air-filter",
                 "device": device,
                 "availability": availability,
             },
@@ -347,6 +382,7 @@ def on_mqtt_connect(client, userdata, flags, rc, properties=None):
             (TOPIC_CMD_RGB_COLOR, 1),
             (TOPIC_CMD_DEBUG_RAW, 1),
             (TOPIC_CMD_TIME_SYNC, 1),
+            (TOPIC_CMD_FILTER_RESET, 1),
         ])
         mqtt_publish_discovery()
         if session.dev_writer is not None:
@@ -419,6 +455,8 @@ def on_mqtt_message(client, userdata, msg):
                     now = datetime.now()
                     h, m, s = now.hour, now.minute, now.second
                 await inject_time(h, m, s)
+            elif topic == TOPIC_CMD_FILTER_RESET:
+                await inject_command(CMD_FILTER_RESET, 0x00)
         except Exception as e:
             log.error(f"MQTT cmd handling error: {e}")
 
@@ -715,6 +753,8 @@ async def cli_repl():
                 await inject_rgb(0x02, 0, 0, 0)
             elif cmd == "time":
                 await inject_time(int(parts[1]), int(parts[2]), int(parts[3]) if len(parts) > 3 else 0)
+            elif cmd == "filterreset":
+                await inject_command(CMD_FILTER_RESET, 0x00)
             elif cmd == "state":
                 print(json.dumps(session.last_state, indent=2, default=str))
             elif cmd == "conn":
