@@ -1,5 +1,34 @@
 # Changelog
 
+## 1.5.1
+
+### Fixed
+- **Cloud-relay failures could silently kill local control for hours,
+  requiring a manual add-on restart to recover.** Root cause: `handle_device`
+  ran the device-side and cloud-side relay as two tasks under
+  `asyncio.wait(..., return_when=FIRST_COMPLETED)` — if the connection to
+  the real Hekr cloud (`hub.hekreu.me:83`) failed or reset for *any* reason,
+  the whole device session was torn down, including the local MQTT control
+  path, even though that path never actually depended on the cloud leg.
+  Traced to a real incident on 2026-08-31: a Home Assistant Core restart
+  left this process's cloud-side connection broken without crashing the
+  process itself, so Supervisor's watchdog (also enabled as of this
+  release — see below) never kicked in, and every device session from then
+  on died instantly with `[dev->cloud] forward error: Connection reset by
+  peer` until the add-on was manually restarted three days later.
+  - Device reads, state decoding (`analyze()`), and MQTT publishing are now
+    fully independent of the cloud connection's health.
+  - Relaying to the real Hekr cloud is now best-effort with its own
+    reconnect loop (capped exponential backoff, 2s–30s) — a cloud-side
+    failure logs a warning and retries indefinitely; it no longer touches
+    the device session at all.
+  - The device session now ends **only** when the device itself
+    disconnects. The `Connected` binary sensor, which already only ever
+    tracked device-side availability, is now actually accurate under
+    cloud-side failures instead of going stale along with everything else.
+  - Supervisor watchdog enabled in `config.yaml` (`watchdog: true`), so a
+    genuine process crash now triggers an automatic restart regardless.
+
 ## 1.5.0
 
 ### Fixed

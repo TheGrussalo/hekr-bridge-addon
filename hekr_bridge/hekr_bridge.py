@@ -498,36 +498,148 @@ def mqtt_start():
 
 
 # === MITM core ===
+#
+# IMPORTANT: the device connection and the real-cloud connection are
+# deliberately decoupled below (since 1.4.1). Local control (MQTT -> device,
+# via inject_command/inject_rgb/etc, which writes directly to dev_writer) and
+# state decoding (analyze(), which drives every HA entity) depend ONLY on the
+# device being connected to us - never on whether relaying to the real Hekr
+# cloud is currently working. A cloud-side hiccup (reset connection, cloud
+# host briefly unreachable, etc) is handled as best-effort with its own
+# reconnect+backoff loop, and can never end the device session or block a
+# state update. Only the device itself disconnecting ends the session.
+#
+# This fixes a real incident (2026-08-31): a Home Assistant Core restart left
+# this process's cloud-side connection in a bad state without crashing the
+# process itself, so Supervisor never restarted it. Every subsequent device
+# session hit a "Connection reset by peer" while relaying to the cloud, which
+# under the old FIRST_COMPLETED coupling below tore down the device session
+# too - even though local control never actually stopped working. The bridge
+# now reconnects to the cloud on its own, indefinitely, without needing an
+# external restart.
 
-async def forward(reader, writer, direction_label):
-    buf = b""
+CLOUD_RECONNECT_BACKOFF_INITIAL = 2
+CLOUD_RECONNECT_BACKOFF_MAX = 30
+
+
+async def open_cloud():
+    """Best-effort connect to the real Hekr cloud. Never raises."""
     try:
-        while True:
-            data = await reader.read(4096)
-            if not data:
-                break
-            writer.write(data)
-            await writer.drain()
-            buf += data
-            while b"\n" in buf:
-                line, buf = buf.split(b"\n", 1)
-                if not line.strip():
-                    continue
-                try:
-                    msg = json.loads(line)
-                except Exception:
-                    continue
-                log_msg(direction_label, msg)
-                analyze(direction_label, msg)
-    except asyncio.CancelledError:
-        raise
+        reader, writer = await asyncio.open_connection(CLOUD_HOST, CLOUD_PORT)
+        log.info(f"=== CLOUD CONNECT to {CLOUD_HOST}:{CLOUD_PORT} ok ===")
+        return reader, writer
     except Exception as e:
-        log.error(f"[{direction_label}] forward error: {e}")
-    finally:
+        log.warning(f"[cloud] connect failed (will retry): {e}")
+        return None, None
+
+
+async def cloud_to_dev(dev_writer, cloud_state):
+    """Relay cloud->device traffic, best-effort.
+
+    Any failure here just drops the cloud side (cloud_state's reader/writer
+    are cleared) and returns quietly - it never touches the device
+    connection. dev_to_cloud() will reconnect to the cloud lazily on its next
+    outbound chunk. This task is cancelled by handle_device() when the
+    device session actually ends; it does not decide that on its own.
+    """
+    buf = b""
+    while True:
+        reader = cloud_state.get("reader")
+        if reader is None:
+            await asyncio.sleep(1)
+            continue
         try:
-            writer.close()
+            data = await reader.read(4096)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning(f"[cloud->dev] read error (non-fatal, will reconnect): {e}")
+            cloud_state["reader"] = None
+            cloud_state["writer"] = None
+            continue
+        if not data:
+            log.info("[cloud->dev] cloud closed the connection (non-fatal, will reconnect)")
+            cloud_state["reader"] = None
+            cloud_state["writer"] = None
+            continue
+
+        buf += data
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            if not line.strip():
+                continue
+            try:
+                msg = json.loads(line)
+            except Exception:
+                continue
+            log_msg("cloud->dev", msg)
+            analyze("cloud->dev", msg)
+
+        try:
+            dev_writer.write(data)
+            await dev_writer.drain()
+        except asyncio.CancelledError:
+            raise
         except Exception:
-            pass
+            # Device side is dead - let dev_to_cloud's own read loop notice
+            # and end the session; nothing to do here.
+            return
+
+
+async def dev_to_cloud(dev_reader, dev_writer, cloud_state):
+    """Read from the device - this is the critical path.
+
+    State decoding and MQTT publishing (via analyze(), below) always happen
+    here, regardless of whether relaying to the real Hekr cloud is currently
+    working. Relaying to the cloud is best-effort: on failure we drop the
+    cloud connection and reconnect lazily on the next chunk, with a capped
+    backoff - but we never stop reading from the device because of it.
+
+    The ONLY way this returns is the device itself disconnecting (EOF) or a
+    genuine error reading from it - which is the correct, and only, signal
+    that the session should end.
+    """
+    buf = b""
+    backoff = CLOUD_RECONNECT_BACKOFF_INITIAL
+    while True:
+        data = await dev_reader.read(4096)
+        if not data:
+            break  # device disconnected - only real end-of-session condition
+
+        buf += data
+        while b"\n" in buf:
+            line, buf = buf.split(b"\n", 1)
+            if not line.strip():
+                continue
+            try:
+                msg = json.loads(line)
+            except Exception:
+                continue
+            log_msg("dev->cloud", msg)
+            analyze("dev->cloud", msg)  # always runs - independent of cloud relay health
+
+        if cloud_state.get("writer") is None:
+            reader, writer = await open_cloud()
+            if writer is not None:
+                cloud_state["reader"] = reader
+                cloud_state["writer"] = writer
+                backoff = CLOUD_RECONNECT_BACKOFF_INITIAL
+            else:
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, CLOUD_RECONNECT_BACKOFF_MAX)
+                continue
+
+        try:
+            cloud_state["writer"].write(data)
+            await cloud_state["writer"].drain()
+        except Exception as e:
+            log.warning(f"[dev->cloud] forward error (non-fatal, will reconnect): {e}")
+            try:
+                cloud_state["writer"].close()
+            except Exception:
+                pass
+            cloud_state["reader"] = None
+            cloud_state["writer"] = None
 
 
 def analyze(direction, msg):
@@ -553,41 +665,51 @@ def analyze(direction, msg):
 
 
 async def handle_device(dev_reader, dev_writer):
+    """Own the device connection. The device is fully functional locally
+    (state decoding + MQTT control) the instant it connects here - the cloud
+    connection is opened alongside it but is never required for that, and
+    never gets to end this session on its own.
+    """
     peer = dev_writer.get_extra_info("peername")
     log.info(f"=== DEVICE CONNECT from {peer} ===")
-    try:
-        cloud_reader, cloud_writer = await asyncio.open_connection(CLOUD_HOST, CLOUD_PORT)
-        log.info(f"=== CLOUD CONNECT to {CLOUD_HOST}:{CLOUD_PORT} ok ===")
-    except Exception as e:
-        log.error(f"Cloud connect failed: {e}")
-        dev_writer.close()
-        return
 
     session.dev_writer = dev_writer
-    session.cloud_writer = cloud_writer
     session.connected_since = time.time()
     mqtt_publish_availability(True)
 
-    t_dev = asyncio.create_task(forward(dev_reader, cloud_writer, "dev->cloud"))
-    t_cloud = asyncio.create_task(forward(cloud_reader, dev_writer, "cloud->dev"))
+    cloud_state = {"reader": None, "writer": None}
+    reader, writer = await open_cloud()
+    cloud_state["reader"] = reader
+    cloud_state["writer"] = writer
+    session.cloud_writer = writer  # best-effort snapshot; may legitimately be None
 
-    _, pending = await asyncio.wait(
-        [t_dev, t_cloud], return_when=asyncio.FIRST_COMPLETED
-    )
-    for t in pending:
-        t.cancel()
-
-    log.info(f"=== SESSION END {peer} ===")
-    if session.dev_writer is dev_writer:
-        session.dev_writer = None
-        session.cloud_writer = None
-        session.connected_since = None
-        mqtt_publish_availability(False)
-    for w in (dev_writer, cloud_writer):
+    t_cloud = asyncio.create_task(cloud_to_dev(dev_writer, cloud_state))
+    try:
+        await dev_to_cloud(dev_reader, dev_writer, cloud_state)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        log.error(f"[dev->cloud] device read error, ending session: {e}")
+    finally:
+        t_cloud.cancel()
         try:
-            w.close()
-        except Exception:
+            await t_cloud
+        except (asyncio.CancelledError, Exception):
             pass
+
+        log.info(f"=== SESSION END {peer} ===")
+        if session.dev_writer is dev_writer:
+            session.dev_writer = None
+            session.cloud_writer = None
+            session.connected_since = None
+            mqtt_publish_availability(False)
+        for w in (dev_writer, cloud_state.get("writer")):
+            if w is None:
+                continue
+            try:
+                w.close()
+            except Exception:
+                pass
 
 
 async def inject_command(cmd_id, value):
