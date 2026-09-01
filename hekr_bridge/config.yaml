@@ -1,5 +1,5 @@
 name: "KKT Kolbe Hekr Bridge"
-version: "1.4.0"
+version: "1.4.1"
 slug: "hekr_bridge"
 description: "MITM proxy bridging a KKT KOLBE Hekr range hood to Home Assistant via MQTT"
 url: "https://github.com/TheGrussalo/hekr-bridge-addon"
@@ -13,6 +13,7 @@ init: false
 host_network: true
 startup: application
 boot: auto
+watchdog: true
 options:
   hekr_dev_tid: ""
   hekr_ctrl_key: ""
