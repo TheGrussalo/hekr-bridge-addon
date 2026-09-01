@@ -102,11 +102,27 @@ class Session:
         self.dev_writer = None
         self.cloud_writer = None
         self.last_state = {}
-        self.last_rgb_sent = (255, 255, 255)
         self.injected_msg_id = 90000
         self.connected_since = None
         self.mqtt_client = None
         self.event_loop = None
+
+
+def get_last_colour():
+    """Read the device's own remembered colour directly from its most
+    recent status frame, rather than maintaining a separate local cache.
+    The device reports R/G/B in every status frame regardless of RGB
+    on/off state - this is the genuine source of truth, survives add-on
+    restarts automatically (no file needed), and stays in sync with
+    changes made from the physical panel too. Falls back to white only in
+    the brief window before any status frame has ever been received (e.g.
+    moments after a fresh restart)."""
+    r = session.last_state.get("r")
+    g = session.last_state.get("g")
+    b = session.last_state.get("b")
+    if r is None or g is None or b is None or (r, g, b) == (0, 0, 0):
+        return (255, 255, 255)
+    return (r, g, b)
 
 
 session = Session()
@@ -160,7 +176,7 @@ def decode_raw(raw_hex):
         "filter_block": b[9:15].hex(),
         "byte15": b[15],
         "checksum": b[16],
-        "power_on": (b[7] > 0) or (b[6] == 1),
+        "power_on": b[7] > 0,
     }
 
 
@@ -421,12 +437,10 @@ def on_mqtt_message(client, userdata, msg):
                 # out to be a complete red herring for RGB - it only ever
                 # controls the independent white channel.
                 if payload.upper() == "OFF":
-                    r, g, b = session.last_rgb_sent
+                    r, g, b = get_last_colour()
                     await inject_rgb(0x00, r, g, b)
                 else:
-                    r, g, b = session.last_rgb_sent
-                    if (r, g, b) == (0, 0, 0):
-                        r, g, b = 255, 255, 255
+                    r, g, b = get_last_colour()
                     await inject_rgb(0x02, r, g, b)
             elif topic == TOPIC_CMD_RGB_COLOR:
                 # mode=0x02 directly - genuinely displays the given colour.
@@ -647,10 +661,6 @@ def analyze(direction, msg):
                 except Exception:
                     pass
             session.last_state = decoded
-            if decoded.get("byte8") == 2:
-                r, g, b = decoded.get("r", 0), decoded.get("g", 0), decoded.get("b", 0)
-                if (r, g, b) != (0, 0, 0):
-                    session.last_rgb_sent = (r, g, b)
             mqtt_publish_state()
 
 
@@ -756,8 +766,6 @@ async def inject_rgb(mode, r, g, b):
         log.warning("Device not connected; RGB command ignored")
         return False
     r, g, b = max(0, min(255, int(r))), max(0, min(255, int(g))), max(0, min(255, int(b)))
-    if mode in (0x00, 0x02):
-        session.last_rgb_sent = (r, g, b)
     session.injected_msg_id += 1
     seq = session.injected_msg_id & 0xFF
     body = [0x48, 0, 0x02, seq, CMD_COLOR, mode, r, g, b]
@@ -879,7 +887,7 @@ async def cli_repl():
             elif cmd == "rgb":
                 await inject_rgb(0x02, int(parts[1]), int(parts[2]), int(parts[3]))
             elif cmd == "rgboff":
-                r, g, b = session.last_rgb_sent
+                r, g, b = get_last_colour()
                 await inject_rgb(0x00, r, g, b)
             elif cmd == "time":
                 await inject_time(int(parts[1]), int(parts[2]), int(parts[3]) if len(parts) > 3 else 0)

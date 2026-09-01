@@ -1,6 +1,6 @@
 # Changelog
 
-## 1.4.1
+## 1.5.1
 
 ### Fixed
 - **Cloud-relay failures could silently kill local control for hours,
@@ -28,6 +28,22 @@
     cloud-side failures instead of going stale along with everything else.
   - Supervisor watchdog enabled in `config.yaml` (`watchdog: true`), so a
     genuine process crash now triggers an automatic restart regardless.
+
+## 1.5.0
+
+### Fixed
+- **Power icon no longer falsely shows "on" when only the white light is
+  on.** `cmdId 0x02` (Power) only ever has an effect when the fan is
+  actually running — confirmed during the RGB investigation — so the
+  entity now reflects fan speed alone, not light state.
+
+### Changed
+- **RGB's "last known colour" is now read directly from the hood's own
+  status frame**, not cached separately by the add-on. The device reports
+  its stored R/G/B on every status update regardless of on/off state, so
+  this is simpler and always accurate than maintaining a local copy —
+  automatically survives add-on restarts with no file needed, and stays
+  in sync with colour changes made from the physical panel too.
 
 ## 1.4.0
 
