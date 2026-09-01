@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.5.2
+
+### Fixed
+- **Supervisor's own TCP watchdog probe was being mistaken for the hood
+  connecting, causing every entity to flicker Unavailable roughly every 2
+  minutes.** `config.yaml`'s `watchdog: "tcp://[HOST]:83"` (added in 1.5.1)
+  makes Supervisor open a plain TCP connection to the bridge's listen port
+  on a timer to confirm the process is alive, then close it immediately
+  without sending anything - completely normal for a TCP health check.
+  `handle_device` didn't distinguish that from the real hood connecting: it
+  treated *any* incoming connection as a full device session, immediately
+  publishing MQTT availability online, then straight back offline the
+  instant the empty probe closed. Traceable by source address in the
+  logs - probes come from `172.30.32.x` (Supervisor's internal Docker
+  network), the real hood connects from its actual LAN address
+  (`192.168.1.72`).
+  - `handle_device` now waits (up to 5s) for the peer to actually send
+    data before treating the connection as a real device session at all.
+    An empty read (immediate EOF, as the watchdog probe does) now closes
+    quietly - no log line, no MQTT availability change, no cloud
+    connection opened, no dashboard flicker.
+  - The first real chunk of data is no longer discarded by this check -
+    it's threaded through to `dev_to_cloud` as `prefetched` and processe
+
 ## 1.5.1
 
 ### Fixed

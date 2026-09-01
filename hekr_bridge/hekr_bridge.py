@@ -586,7 +586,7 @@ async def cloud_to_dev(dev_writer, cloud_state):
             return
 
 
-async def dev_to_cloud(dev_reader, dev_writer, cloud_state):
+async def dev_to_cloud(dev_reader, dev_writer, cloud_state, prefetched=None):
     """Read from the device - this is the critical path.
 
     State decoding and MQTT publishing (via analyze(), below) always happen
@@ -595,16 +595,27 @@ async def dev_to_cloud(dev_reader, dev_writer, cloud_state):
     cloud connection and reconnect lazily on the next chunk, with a capped
     backoff - but we never stop reading from the device because of it.
 
+    'prefetched' is the first chunk already consumed by handle_device (to
+    tell a real device session apart from Supervisor's TCP watchdog probe,
+    which connects and disconnects without sending anything) - it's
+    processed exactly like any other chunk before the normal read loop
+    begins, so nothing is lost.
+
     The ONLY way this returns is the device itself disconnecting (EOF) or a
     genuine error reading from it - which is the correct, and only, signal
     that the session should end.
     """
     buf = b""
     backoff = CLOUD_RECONNECT_BACKOFF_INITIAL
+
+    pending_chunks = [prefetched] if prefetched else []
     while True:
-        data = await dev_reader.read(4096)
-        if not data:
-            break  # device disconnected - only real end-of-session condition
+        if pending_chunks:
+            data = pending_chunks.pop(0)
+        else:
+            data = await dev_reader.read(4096)
+            if not data:
+                break  # device disconnected - only real end-of-session condition
 
         buf += data
         while b"\n" in buf:
@@ -669,8 +680,32 @@ async def handle_device(dev_reader, dev_writer):
     (state decoding + MQTT control) the instant it connects here - the cloud
     connection is opened alongside it but is never required for that, and
     never gets to end this session on its own.
+
+    Supervisor's own TCP watchdog (config.yaml: watchdog: "tcp://[HOST]:83")
+    connects to this exact port on a timer to check the process is alive,
+    then disconnects immediately without sending anything - source address
+    172.30.32.x (Supervisor's internal Docker network), not the hood's real
+    LAN address. Without filtering that out, every watchdog probe gets
+    mistaken for the hood connecting: MQTT availability flips online then
+    straight back offline, and every entity flickers Unavailable roughly
+    every 2 minutes even though the hood itself is fine. So: wait for the
+    peer to actually send something before treating the connection as a
+    real device session at all. An empty read (EOF with no data) closes
+    quietly - no log line, no availability change, no cloud connection.
     """
     peer = dev_writer.get_extra_info("peername")
+    try:
+        first_data = await asyncio.wait_for(dev_reader.read(4096), timeout=5)
+    except (asyncio.TimeoutError, Exception):
+        first_data = None
+
+    if not first_data:
+        try:
+            dev_writer.close()
+        except Exception:
+            pass
+        return
+
     log.info(f"=== DEVICE CONNECT from {peer} ===")
 
     session.dev_writer = dev_writer
@@ -685,7 +720,7 @@ async def handle_device(dev_reader, dev_writer):
 
     t_cloud = asyncio.create_task(cloud_to_dev(dev_writer, cloud_state))
     try:
-        await dev_to_cloud(dev_reader, dev_writer, cloud_state)
+        await dev_to_cloud(dev_reader, dev_writer, cloud_state, prefetched=first_data)
     except asyncio.CancelledError:
         raise
     except Exception as e:
