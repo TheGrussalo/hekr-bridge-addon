@@ -7,9 +7,6 @@ image: "ghcr.io/thegrussalo/{arch}-addon-hekr-bridge"
 arch:
   - amd64
   - aarch64
-  - armv7
-  - armhf
-  - i386
 init: false
 host_network: true
 startup: application

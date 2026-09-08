@@ -46,7 +46,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        arch: [aarch64, amd64, armhf, armv7, i386]
+        # armhf, armv7, and i386 are no longer supported by HA Supervisor
+        arch: [aarch64, amd64]
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
