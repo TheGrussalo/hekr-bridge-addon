@@ -1,0 +1,74 @@
+configuration:
+  hekr_dev_tid:
+    name: Device ID (devTid)
+    description: >-
+      Your hood's unique device identifier, e.g. ESP_2M_XXXXXXXXXXXX.
+      Captured from a devLoginResp packet — see "Finding your device
+      identifiers" in the add-on documentation.
+  hekr_ctrl_key:
+    name: Control key (ctrlKey)
+    description: >-
+      32-character hex key unique to your device. Captured alongside the
+      Device ID from the same devLoginResp packet.
+  hekr_cloud_host:
+    name: Hekr cloud host
+    description: >-
+      The real Hekr cloud host to relay traffic on to, so the original
+      WISEN app keeps working. Defaults to hub.hekreu.me (EU). Change only
+      if your device connects elsewhere.
+  hekr_cloud_port:
+    name: Hekr cloud port
+    description: Port the real Hekr cloud listens on. Defaults to 83.
+  hekr_listen_port:
+    name: Listen port
+    description: >-
+      Port this add-on listens on for your hood's redirected traffic.
+      Must match the destination port in your router's DNAT rule. Defaults
+      to 83.
+  mqtt_host:
+    name: MQTT broker host
+    description: >-
+      Defaults to localhost. This add-on uses host networking, so
+      Supervisor's internal core-mosquitto hostname will not resolve —
+      use localhost or your Home Assistant box's own LAN IP.
+  mqtt_port:
+    name: MQTT broker port
+    description: Defaults to 1883.
+  mqtt_user:
+    name: MQTT username
+    description: Leave blank if your broker allows anonymous access.
+  mqtt_pass:
+    name: MQTT password
+    description: Leave blank if your broker allows anonymous access.
+  mqtt_topic_base:
+    name: MQTT topic base
+    description: >-
+      Base MQTT topic all entities and commands are published under.
+      Defaults to cappa/kkt.
+  ha_device_id:
+    name: Home Assistant device ID
+    description: Internal identifier for the device entry shown in Home Assistant.
+  ha_device_name:
+    name: Home Assistant device name
+    description: Friendly name shown for the device in Home Assistant.
+  cmd_power:
+    name: Power command ID
+    description: >-
+      Protocol command ID for Power. Default 2 is confirmed working on the
+      HERMES RGBW and FREE models — only change this if mapping a
+      different model.
+  cmd_light:
+    name: Light command ID
+    description: >-
+      Protocol command ID for the white light. Default 3 is confirmed
+      working on the HERMES RGBW and FREE models.
+  cmd_speed:
+    name: Speed command ID
+    description: >-
+      Protocol command ID for fan speed. Default 4 is confirmed working
+      on the HERMES RGBW and FREE models.
+  cmd_color:
+    name: RGB colour command ID
+    description: >-
+      Protocol command ID for RGB colour. Default 7 is confirmed working
+      on the HERMES RGBW model.
