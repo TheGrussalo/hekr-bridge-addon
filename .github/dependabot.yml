@@ -1,0 +1,23 @@
+version: 2
+updates:
+  # GitHub Actions used in workflows (actions/checkout, docker/login-action, etc.)
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+
+  # Base image in hekr_bridge/Dockerfile (python:3.12-slim)
+  - package-ecosystem: "docker"
+    directory: "/hekr_bridge"
+    schedule:
+      interval: "weekly"
+
+  # Python dependencies in hekr_bridge/requirements.txt (paho-mqtt)
+  - package-ecosystem: "pip"
+    directory: "/hekr_bridge"
+    schedule:
+      interval: "weekly"
