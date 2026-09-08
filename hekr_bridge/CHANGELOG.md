@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.5.6
+
+### Fixed
+- **"Set My Colour" (and any colour picked from Home Assistant) could turn
+  the RGB light white instead of the intended colour.** Home Assistant's
+  MQTT light schema publishes a colour-set command and a plain ON command
+  almost simultaneously when a colour is picked and applied in one action -
+  confirmed ~40ms apart in the logs. `get_last_colour()` (used by the bare
+  ON handler to know what colour to re-assert) read the colour back from
+  `session.last_state`, which only updates once the device's *next status
+  frame* confirms it - a real network round-trip away, and far slower than
+  40ms. The bare-ON command was reading stale pre-change state and falling
+  back to the white default, silently overwriting the colour the sibling
+  command had just sent moments earlier.
+  - `get_last_colour()` now prefers a colour we ourselves sent within the
+    last 2 seconds (tracked client-side in `inject_rgb()`, updated
+    immediately on send with no dependency on the device echoing it back),
+    closing the race entirely.
+  - Outside that short window, it still falls back to the device's own
+    reported colour exactly as before - this is what keeps colour changes
+    made from the physical panel in sync, and continues to work correctly
+    (verified: a colour change beyond the 2-second window is picked up
+    normally).
+  - Verified against the exact real sequence that exposed this
+    (colour-set immediately followed by a racing bare-ON ~40ms later),
+    plus the full existing test suite.
+    
 ## 1.5.5
 
 ### Fixed
