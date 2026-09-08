@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.5.3
+
+### Fixed
+- **RGB Light entity showed "on" in Home Assistant when the strip was
+  genuinely dark.** Root-caused through direct, methodical physical testing
+  against the hood on 2026-09-08 (isolating fan, light, and RGB in turn,
+  both via HA commands and genuine panel button presses) - status byte 8
+  isn't a clean, standalone RGB-on indicator; it also changes as a side
+  effect of unrelated commands, and correct handling differs by what
+  triggered it:
+  - **Fan/speed/power changes never legitimately touch RGB.** Confirmed
+    twice: once via an HA-triggered power-on, once via a genuine physical
+    fan-button press (speed cycled 0->1->2->3->1->0 with the RGB strip
+    confirmed dark throughout) - `byte8` still rose to `2` on fan-on and
+    never dropped back even once the fan turned off again. A `byte8->2`
+    alongside a `speed`/`byte5` change is now always treated as spurious,
+    regardless of whether the command came from us or the panel.
+  - **Light-button changes are more subtle.** The physical Light button on
+    the hood genuinely cycles white and RGB together as one 4-state action
+    (confirmed directly: press 1 = both on, press 2 = white only, press 3 =
+    RGB only, press 4 = both off), so a panel-driven light change can
+    legitimately carry a real RGB change and should be trusted. But when
+    the light change instead follows *our own* light-only command (`cmdId
+    0x03` alone, which cannot invoke the panel's combined behaviour),
+    `byte8` still spuriously rose to `2` in testing - so that specific case
+    is still distrusted, tracked via a 5-second window after our own
+    light-only commands.
+  - A `byte8->2` with nothing else changed (or following one of our own
+    genuine RGB commands within the last few seconds) is trusted as a real,
+    standalone RGB change.
+  - A transition toward `0` or `1` (implying off) is always trusted
+    regardless - the failure mode there is at worst reporting off while
+    it's still genuinely on, which is the safe direction, not the false-on
+    this fix targets.
+  - `rgb_on` is now included in the state-change diff log, so its corrected
+    value is visible distinctly from the raw `byte8` field going forward.
+  - An earlier version of this fix (same day) treated *any* accompanying
+    light change as spurious, which would have wrongly suppressed the
+    panel's genuine combined light+RGB button behaviour - corrected before
+    release once that behaviour was confirmed through direct testing.
+
 ## 1.5.2
 
 ### Fixed

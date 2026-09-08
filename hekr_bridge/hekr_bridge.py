@@ -106,6 +106,8 @@ class Session:
         self.connected_since = None
         self.mqtt_client = None
         self.event_loop = None
+        self.last_rgb_cmd_at = 0.0  # time.time() of our last genuine RGB command
+        self.last_light_cmd_at = 0.0  # time.time() of our last light-only command
 
 
 def get_last_colour():
@@ -180,9 +182,84 @@ def decode_raw(raw_hex):
     }
 
 
-def state_diff(new):
+def resolve_rgb_on(decoded):
+    """Correct decoded['rgb_on'] for a real device quirk, confirmed 2026-09-08
+    through direct physical testing against the hood (both HA-triggered and
+    genuine panel-button presses, isolating each channel in turn).
+
+    Status byte 8 is not a clean, standalone RGB-on indicator - it also
+    changes as a side effect of unrelated commands, and the correct handling
+    differs by what triggered it:
+
+    - Fan/speed/power changes NEVER legitimately touch RGB. Confirmed twice:
+      once via an HA-triggered power-on, once via a genuine physical
+      fan-button press (speed cycled 0->1->2->3->1->0 with the lights
+      confirmed off throughout) - byte8 still rose to 2 on fan-on and never
+      dropped back even after the fan turned off again, despite the RGB
+      strip staying dark the entire time. A byte8->2 alongside a
+      speed/byte5 change is always spurious, regardless of whether the fan
+      command came from us or the panel.
+
+    - Light changes are more subtle: the physical Light button on the hood
+      genuinely cycles both white and RGB together as a single 4-state
+      action (confirmed directly: press 1 = both on, press 2 = white only,
+      press 3 = RGB only, press 4 = both off) - so a panel-driven light
+      change legitimately can carry a real RGB change with it, and should
+      be trusted. But when the light change instead follows OUR OWN
+      light-only command (cmdId 0x03 alone, which never invokes the panel's
+      combined behaviour), byte8 still spuriously rose to 2 in testing even
+      though the light-only command could not have touched RGB - so that
+      specific case must still be distrusted.
+
+    - A byte8->2 with nothing else changed at all (or following one of our
+      own genuine RGB commands within the last few seconds) is a real,
+      standalone RGB change and is trusted as-is.
+
+    A transition toward 0 or 1 (implying off) is always trusted regardless -
+    the failure mode there is at worst reporting off while it's still
+    genuinely on, which is the safe direction, not the false-on this
+    function exists to prevent.
+    """
+    prev = session.last_state or {}
+    prev_byte8 = prev.get("byte8")
+    new_byte8 = decoded.get("byte8")
+
+    if new_byte8 != 2 or prev_byte8 == new_byte8:
+        return decoded["rgb_on"]  # not a ->2 transition at all; trust as-is
+
+    if (time.time() - session.last_rgb_cmd_at) < 5.0:
+        return decoded["rgb_on"]  # this ->2 is genuinely from our own RGB command
+
+    speed_changed = (
+        prev.get("speed") != decoded.get("speed")
+        or prev.get("byte5") != decoded.get("byte5")
+    )
+    if speed_changed:
+        carried = prev.get("rgb_on", False)
+        log.info(
+            f"[rgb] ignoring spurious byte8 ->2 alongside fan/speed change "
+            f"(never legitimate); keeping rgb_on={carried}"
+        )
+        return carried
+
+    light_changed = prev.get("light") != decoded.get("light")
+    if light_changed and (time.time() - session.last_light_cmd_at) < 5.0:
+        carried = prev.get("rgb_on", False)
+        log.info(
+            f"[rgb] ignoring spurious byte8 ->2 following our own light-only "
+            f"command (panel's combined behaviour wasn't invoked); "
+            f"keeping rgb_on={carried}"
+        )
+        return carried
+
+    # Either a panel-driven light change (genuinely cycles RGB too - trust
+    # it), or a standalone byte8 change with nothing else changed. Both real.
+    return decoded["rgb_on"]
+
+
+
     diffs = []
-    for k in ("byte4", "byte5", "light", "speed", "byte8", "r", "g", "b", "byte15", "filter_needs_cleaning", "filter_block"):
+    for k in ("byte4", "byte5", "light", "speed", "byte8", "rgb_on", "r", "g", "b", "byte15", "filter_needs_cleaning", "filter_block"):
         old_v = session.last_state.get(k)
         new_v = new.get(k)
         if old_v != new_v:
@@ -659,6 +736,7 @@ def analyze(direction, msg):
         raw_hex = msg.get("params", {}).get("data", {}).get("raw", "")
         decoded = decode_raw(raw_hex)
         if decoded:
+            decoded["rgb_on"] = resolve_rgb_on(decoded)
             diff = state_diff(decoded)
             if diff:
                 log.info(f"STATE CHG: {diff}  raw={raw_hex}")
@@ -772,6 +850,8 @@ async def inject_command(cmd_id, value):
     log_msg("INJECTED->dev", msg)
     session.dev_writer.write(line.encode())
     await session.dev_writer.drain()
+    if cmd_id == CMD_LIGHT:
+        session.last_light_cmd_at = time.time()
     return True
 
 
@@ -822,6 +902,7 @@ async def inject_rgb(mode, r, g, b):
     log_msg("INJECTED->dev", msg)
     session.dev_writer.write(line.encode())
     await session.dev_writer.drain()
+    session.last_rgb_cmd_at = time.time()
     return True
 
 
