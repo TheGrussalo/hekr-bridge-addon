@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.5.4
+
+### Fixed
+- **Every real device session was crashing immediately after the first
+  status frame, dropping straight back to disconnected.** Regression in the
+  1.5.3 release above: an editing mistake while refining `resolve_rgb_on()`
+  accidentally deleted the `def state_diff(new):` line while leaving its
+  body behind. The orphaned body was syntactically valid Python (absorbed
+  as unreachable code at the end of `resolve_rgb_on()`), so it passed a
+  syntax check cleanly - but `state_diff` no longer existed as a callable
+  function anywhere in the module. `analyze()` calls `state_diff()` on
+  every single status frame, so every real device session hit
+  `NameError: name 'state_diff' is not defined` and was torn down
+  immediately (`[dev->cloud] device read error, ending session`) - local
+  MQTT control and cloud relay were both unaffected by anything in this
+  release's actual RGB logic, since the crash happened immediately
+  afterwards, before any of it mattered.
+  - Restored the missing `state_diff` function definition.
+  - Verified this time by actually importing and running the module against
+    a real captured frame end-to-end, not just a syntax check - a syntax
+    check alone cannot catch a function silently disappearing into dead
+    code like this.
+
 ## 1.5.3
 
 ### Fixed
