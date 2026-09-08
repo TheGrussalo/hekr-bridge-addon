@@ -26,7 +26,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Test build (no push)
-        uses: home-assistant/builder@4de35182ce1e329181bffcbcc84d33db5e2c7e10 # 2026.06.0
+        uses: home-assistant/builder@2026.06.0
         with:
           args: |
             --${{ matrix.arch }} \
@@ -91,7 +91,7 @@ jobs:
         run: echo "lc=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_OUTPUT"
 
       - name: Build and publish
-        uses: home-assistant/builder@4de35182ce1e329181bffcbcc84d33db5e2c7e10 # 2026.06.0
+        uses: home-assistant/builder@2026.06.0
         with:
           args: |
             --${{ matrix.arch }} \
