@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+
+# Captured traffic / device data (see "Finding your device identifiers")
+*.pcap
+*.pcapng
+
+# Local secrets / real device config — never commit actual devTid/ctrlKey
+*.env
+.env
+secrets.yaml
+secrets.yml
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS cruft
+.DS_Store
+Thumbs.db
+
+# Home Assistant local dev artifacts
+*.log

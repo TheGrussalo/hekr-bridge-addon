@@ -3,6 +3,7 @@ version: "1.5.6"
 slug: "hekr_bridge"
 description: "MITM proxy bridging a KKT KOLBE Hekr range hood to Home Assistant via MQTT"
 url: "https://github.com/TheGrussalo/hekr-bridge-addon"
+image: "ghcr.io/thegrussalo/{arch}-addon-hekr-bridge"
 arch:
   - amd64
   - aarch64
