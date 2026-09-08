@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.5.5
+
+### Fixed
+- **RGB Light entity could still show "on" in Home Assistant when genuinely
+  dark, in one specific case the 1.5.3/1.5.4 fix missed.** `inject_rgb()`
+  stamped `last_rgb_cmd_at` (the "we recently sent a genuine RGB command,
+  trust the next byte8 rise" grace window) on *any* RGB command, including
+  `OFF`. Reproduced directly: an RGB-off command correctly turned RGB off,
+  but ~2.8 seconds later a completely unrelated light-only command caused
+  the usual spurious `byte8->2` bystander flip - and because the earlier
+  RGB-off command's timestamp was still within the 5-second grace window,
+  `resolve_rgb_on()` mistook that stale timestamp for justification and
+  trusted the rise, when an OFF command can never explain a rise to `2` in
+  the first place.
+  - `last_rgb_cmd_at` is now only stamped for genuine ON-mode RGB commands
+    (`mode=0x02`/`0x03`) - an OFF command no longer extends this window at
+    all, so a subsequent unrelated byte8 rise can't piggyback on it.
+  - Verified against the exact real sequence that exposed this (RGB-off,
+    then an unrelated light-on ~2.8s later), plus the full existing test
+    suite, both via direct unit tests and a full module import/run.
+
 ## 1.5.4
 
 ### Fixed

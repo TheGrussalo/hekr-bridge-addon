@@ -902,8 +902,9 @@ async def inject_rgb(mode, r, g, b):
     log_msg("INJECTED->dev", msg)
     session.dev_writer.write(line.encode())
     await session.dev_writer.drain()
-    session.last_rgb_cmd_at = time.time()
-    return True
+    if mode in (0x02, 0x03):  # only ON-modes can ever explain a ->2 rise;
+        session.last_rgb_cmd_at = time.time()  # an OFF command must not
+    return True                                # extend this grace window
 
 
 async def inject_time(hour, minute, second):
