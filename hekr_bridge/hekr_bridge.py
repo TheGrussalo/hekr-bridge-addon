@@ -108,17 +108,34 @@ class Session:
         self.event_loop = None
         self.last_rgb_cmd_at = 0.0  # time.time() of our last genuine RGB command
         self.last_light_cmd_at = 0.0  # time.time() of our last light-only command
+        self.last_sent_colour = None  # (r,g,b) we ourselves last told the device
+        self.last_sent_colour_at = 0.0
 
 
 def get_last_colour():
-    """Read the device's own remembered colour directly from its most
-    recent status frame, rather than maintaining a separate local cache.
-    The device reports R/G/B in every status frame regardless of RGB
-    on/off state - this is the genuine source of truth, survives add-on
-    restarts automatically (no file needed), and stays in sync with
-    changes made from the physical panel too. Falls back to white only in
-    the brief window before any status frame has ever been received (e.g.
-    moments after a fresh restart)."""
+    """Return the colour that should be used for an 'on' or 'off' RGB
+    command that doesn't specify one itself (e.g. a bare ON, or the 'Set My
+    Colour' button).
+
+    Prefers a colour we ourselves sent within the last couple of seconds
+    over the device's own reported state. This matters because Home
+    Assistant's MQTT light schema publishes a colour-set command and a
+    plain ON command almost simultaneously (confirmed ~40ms apart in
+    testing) when picking a colour turns the light on - reading the
+    device's status frame at that moment is racy, since the device hasn't
+    had time to process and echo back the colour we just sent, so the
+    bare-ON handler would read stale pre-change state and fall back to
+    white, silently overwriting the colour that was just set.
+
+    Outside that short window, falls back to the device's own reported
+    colour (from its most recent status frame) - this is what keeps colour
+    changes made from the physical panel in sync, survives add-on restarts
+    without needing a file, and is the better source of truth once enough
+    time has passed that we're not racing our own recent command.
+    """
+    if session.last_sent_colour is not None and (time.time() - session.last_sent_colour_at) < 2.0:
+        return session.last_sent_colour
+
     r = session.last_state.get("r")
     g = session.last_state.get("g")
     b = session.last_state.get("b")
@@ -904,7 +921,10 @@ async def inject_rgb(mode, r, g, b):
     await session.dev_writer.drain()
     if mode in (0x02, 0x03):  # only ON-modes can ever explain a ->2 rise;
         session.last_rgb_cmd_at = time.time()  # an OFF command must not
-    return True                                # extend this grace window
+    if (r, g, b) != (0, 0, 0):                 # extend this grace window
+        session.last_sent_colour = (r, g, b)
+        session.last_sent_colour_at = time.time()
+    return True
 
 
 async def inject_time(hour, minute, second):
