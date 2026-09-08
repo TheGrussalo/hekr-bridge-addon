@@ -257,7 +257,7 @@ def resolve_rgb_on(decoded):
     return decoded["rgb_on"]
 
 
-
+def state_diff(new):
     diffs = []
     for k in ("byte4", "byte5", "light", "speed", "byte8", "rgb_on", "r", "g", "b", "byte15", "filter_needs_cleaning", "filter_block"):
         old_v = session.last_state.get(k)
