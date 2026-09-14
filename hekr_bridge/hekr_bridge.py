@@ -12,7 +12,7 @@ The bridge forwards all traffic untouched, logs every message, publishes state
 to MQTT and can inject commands (appSend) towards the device on demand.
 
 You redirect the device's cloud traffic to this bridge using a DNAT rule on
-your router (see README.md).
+your router (see DOCS.md).
 
 License: MIT
 """
@@ -27,6 +27,8 @@ from datetime import datetime
 from pathlib import Path
 
 import paho.mqtt.client as mqtt
+
+from smartconfig import run_smartconfig
 
 # === Configuration (via environment variables) ===
 CLOUD_HOST = os.environ.get("HEKR_CLOUD_HOST", "128.1.42.23")
@@ -53,6 +55,8 @@ TOPIC_CMD_RGB_COLOR = f"{TOPIC_BASE}/rgb/rgb/set"   # "R,G,B" string from HA col
 TOPIC_CMD_DEBUG_RAW = f"{TOPIC_BASE}/debug/raw/set"  # hex string, for protocol testing
 TOPIC_CMD_TIME_SYNC = f"{TOPIC_BASE}/time/sync/set"   # any payload triggers a clock sync
 TOPIC_CMD_FILTER_RESET = f"{TOPIC_BASE}/filter/reset/set"  # any payload triggers filter reset
+TOPIC_CMD_PAIR = f"{TOPIC_BASE}/pair/set"  # JSON {"ssid": "...", "password": "..."} triggers SmartConfig pairing
+TOPIC_PAIR_STATUS = f"{TOPIC_BASE}/pair/status"  # JSON progress/result published during pairing
 
 HA_DISCOVERY_PREFIX = os.environ.get("HA_DISCOVERY_PREFIX", "homeassistant")
 DEVICE_ID = os.environ.get("HA_DEVICE_ID", "cappa_kkt_kolbe")
@@ -63,8 +67,12 @@ CMD_POWER = int(os.environ.get("CMD_POWER", "2"))   # 0x02
 CMD_LIGHT = int(os.environ.get("CMD_LIGHT", "3"))   # 0x03
 CMD_SPEED = int(os.environ.get("CMD_SPEED", "4"))   # 0x04
 # RGB colour, confirmed on KKT KOLBE HERMES RGBW: cmdId 0x07, 4-byte payload
-# [mode, R, G, B]. mode=0x02 turns RGB on with the given colour, mode=0x01 turns
-# it off. Status frame reports the current colour back in bytes 11/12/13.
+# [mode, R, G, B]. mode=0x02 genuinely turns RGB on with the given colour;
+# mode=0x00 genuinely turns it off (confirmed dark, indicator included) -
+# a clean symmetric pair, fully verified 2026-08-13. See inject_rgb()'s
+# docstring below for the full story, including two earlier incorrect
+# theories (mode=0x01 as the off-flag; a Light-toggle-based approach) that
+# were each believed correct before being disproven.
 CMD_COLOR = int(os.environ.get("CMD_COLOR", "7"))   # 0x07
 # Clock/time-of-day, confirmed 2026-08-11: cmdId 0x08, plain 3-byte payload
 # [hour, minute, second] with a real computed checksum (the reference
@@ -93,7 +101,7 @@ logging.basicConfig(
 log = logging.getLogger("hekr-bridge")
 
 if not CTRL_KEY or not DEV_TID:
-    log.error("HEKR_CTRL_KEY and HEKR_DEV_TID must be set. See README.md")
+    log.error("HEKR_CTRL_KEY and HEKR_DEV_TID must be set. See DOCS.md")
     sys.exit(1)
 
 
@@ -106,6 +114,7 @@ class Session:
         self.connected_since = None
         self.mqtt_client = None
         self.event_loop = None
+        self.pairing_task = None
         self.last_rgb_cmd_at = 0.0  # time.time() of our last genuine RGB command
         self.last_light_cmd_at = 0.0  # time.time() of our last light-only command
         self.last_sent_colour = None  # (r,g,b) we ourselves last told the device
@@ -488,6 +497,7 @@ def on_mqtt_connect(client, userdata, flags, rc, properties=None):
             (TOPIC_CMD_DEBUG_RAW, 1),
             (TOPIC_CMD_TIME_SYNC, 1),
             (TOPIC_CMD_FILTER_RESET, 1),
+            (TOPIC_CMD_PAIR, 1),
         ])
         mqtt_publish_discovery()
         if session.dev_writer is not None:
@@ -564,10 +574,49 @@ def on_mqtt_message(client, userdata, msg):
                 await inject_time(h, m, s)
             elif topic == TOPIC_CMD_FILTER_RESET:
                 await inject_command(CMD_FILTER_RESET, 0x00)
+            elif topic == TOPIC_CMD_PAIR:
+                try:
+                    pair_req = json.loads(payload)
+                    pair_ssid = pair_req["ssid"]
+                    pair_password = pair_req.get("password", "")
+                except Exception as e:
+                    log.error(f"Bad pair payload (expect JSON {{\"ssid\":..,\"password\":..}}): {e}")
+                    return
+                start_pairing(pair_ssid, pair_password)
         except Exception as e:
             log.error(f"MQTT cmd handling error: {e}")
 
     asyncio.run_coroutine_threadsafe(handle(), loop)
+
+
+def mqtt_publish_pair_status(status: dict):
+    if session.mqtt_client:
+        session.mqtt_client.publish(TOPIC_PAIR_STATUS, json.dumps(status, default=str), qos=1, retain=False)
+
+
+def start_pairing(ssid: str, password: str):
+    """Kick off SmartConfig pairing as a background task. Put the hood
+    into pairing mode (your usual button press) BEFORE triggering this -
+    it needs to already be listening. See smartconfig.py for details."""
+    if session.pairing_task is not None and not session.pairing_task.done():
+        log.warning("Pairing already in progress, ignoring new request")
+        mqtt_publish_pair_status({"state": "error", "detail": "pairing already in progress"})
+        return
+
+    async def _run():
+        mqtt_publish_pair_status({"state": "sending", "ssid": ssid})
+        try:
+            result = await run_smartconfig(ssid, password, on_progress=mqtt_publish_pair_status)
+        except Exception as e:
+            log.error(f"Pairing failed: {e}")
+            mqtt_publish_pair_status({"state": "error", "detail": str(e)})
+            return
+        if result.get("success"):
+            mqtt_publish_pair_status({"state": "success", "pin_code": result["pin_code"], "devices": result["devices"]})
+        else:
+            mqtt_publish_pair_status({"state": "timeout", "pin_code": result["pin_code"], "devices": result["devices"]})
+
+    session.pairing_task = asyncio.ensure_future(_run())
 
 
 def mqtt_start():
@@ -996,10 +1045,11 @@ async def cli_repl():
       rgboff         turn RGB off (keeps last colour remembered)
       state          print last decoded state
       conn           connection status
+      pair SSID PASS start SmartConfig pairing of a new/reset hood
       quit
     """
     loop = asyncio.get_event_loop()
-    print("\nCommands: speed N | light 0/1 | power 0/1 | cmd HH HH | raw HEX | rgb R G B | rgboff | state | conn | quit\n")
+    print("\nCommands: speed N | light 0/1 | power 0/1 | cmd HH HH | raw HEX | rgb R G B | rgboff | state | conn | pair SSID PASS | quit\n")
     while True:
         try:
             line = await loop.run_in_executor(None, input, "> ")
@@ -1038,10 +1088,16 @@ async def cli_repl():
                     print(f"connected for {age}s")
                 else:
                     print("NOT connected")
+            elif cmd == "pair":
+                pair_ssid = parts[1]
+                pair_password = parts[2] if len(parts) > 2 else ""
+                print(f"Starting SmartConfig for SSID {pair_ssid!r} - make sure the hood is in pairing mode now.")
+                result = await run_smartconfig(pair_ssid, pair_password, on_progress=lambda p: print(f"  {p}"))
+                print(f"Result: {json.dumps(result, default=str, indent=2)}")
             elif cmd in ("quit", "exit"):
                 break
             else:
-                print("Usage: speed N | light 0/1 | power 0/1 | cmd HH HH | raw HEX | rgb R G B | rgboff | state | conn | quit")
+                print("Usage: speed N | light 0/1 | power 0/1 | cmd HH HH | raw HEX | rgb R G B | rgboff | state | conn | pair SSID PASS | quit")
         except Exception as e:
             print(f"Error: {e}")
 
