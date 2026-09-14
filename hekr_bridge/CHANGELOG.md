@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.6.0
+
+### Added
+- **New/factory-reset hoods can now be paired to WiFi without the Wisen app**,
+  whose cloud pairing endpoint (Hekr's `getPinCode` API) is dead. Reverse-
+  engineered from `Wisen_1_9_1_APKPure.apk` (decompiled with jadx) - the app
+  bundles the same Hekr SDK this bridge already talks to. Added
+  `smartconfig.py`, a line-by-line port of `me.hekr.hekrconfig.utils.
+  HekrAirKissEncoder` and `me.hekr.hekrconfig.common.CommonDeviceConfig`'s
+  SmartConfig (multicast, length-encoded) provisioning mode:
+  - Generates our own local PIN instead of fetching one from Hekr's cloud -
+    traced the app's code and confirmed the PIN is only used for local
+    correlation during WiFi handoff, not validated against the cloud at
+    that stage.
+  - Triggered via new MQTT topic `cappa/kkt/pair/set` (JSON
+    `{"ssid": "...", "password": "..."}`), with progress/result on
+    `cappa/kkt/pair/status`. Also added as a `pair SSID PASSWORD` command in
+    the CLI REPL for testing without HA.
+  - Re-validated 2026-09-14 by re-decompiling the APK fresh and checking
+    every piece against the real source line-by-line, rather than trusting
+    the original port's own account of it. Found and fixed one real bug in
+    the process: the success-detection logic was missing a `bind != 0`
+    check present in the real app's `handlerConfigFromDevice` ("Not binding
+    action" -> message silently ignored) - without it, the port could have
+    reported a false-positive pairing success on a status broadcast the
+    real app would have ignored.
+  - **Still not tested against real hardware** - no way to test AirKiss-style
+    radio timing from a sandboxed environment. Put the hood in pairing mode
+    (usual button press) before triggering, then watch `pair/status` / the
+    REPL output. See `smartconfig.py`'s module docstring for the full
+    protocol writeup, caveats, and validation notes.
+  - Relies on `host_network: true` (already set) for multicast send and
+    UDP broadcast receive (`0.0.0.0:24254`) to work in the container at all.
+
+### Fixed
+- Stale comment near `CMD_COLOR` still described the long-disproven
+  "mode=0x01 turns RGB off" theory from early in the investigation,
+  contradicting the correct logic implemented everywhere else in the
+  file (mode=0x02/mode=0x00 as the real on/off pair, confirmed in 1.5.x).
+  Comment-only - no functional change.
+- Two log/docstring references to `README.md` corrected to `DOCS.md`,
+  the file that actually exists in this repo.
+
 ## 1.5.6
 
 ### Fixed

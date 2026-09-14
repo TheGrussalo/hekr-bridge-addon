@@ -98,6 +98,32 @@ Force a reconnect (power-cycle the hood, or flush its existing connection
 on the router, e.g. `conntrack -D -s <HOOD_IP>`) so it picks up the new
 route.
 
+## Pairing a new/reset hood without the Wisen app
+
+If your hood is unpaired (fresh, or after a factory reset) and the Wisen
+app's own pairing flow fails — this is expected as of 2026-09, since it
+depends on a Hekr cloud endpoint (`getPinCode`) that's no longer up — the
+add-on can do the WiFi handoff itself, reverse-engineered directly from
+the app's own SmartConfig implementation.
+
+1. Put the hood into pairing mode (your usual button press).
+2. Trigger pairing, either:
+   - **MQTT**: publish JSON to `cappa/kkt/pair/set`:
+     ```json
+     {"ssid": "YourWifiSSID", "password": "YourWifiPassword"}
+     ```
+     Progress and the result are published to `cappa/kkt/pair/status`.
+   - **CLI** (attach to the add-on console): `pair YourWifiSSID YourWifiPassword`
+3. Watch for a `STEP` in the 1–4 range with `code: 200` — that means the
+   hood accepted the credentials and is joining your WiFi. It should then
+   pick up an IP via DHCP and, once it tries to phone home, get picked up
+   by this bridge as normal via your existing DNAT redirect.
+
+This has not been validated against real hardware — AirKiss-style
+protocols are timing-sensitive, so don't be surprised if the first attempt
+needs a retry or two. See `smartconfig.py`'s module docstring for the full
+protocol writeup, caveats, and what's been checked so far.
+
 ## Entities exposed in Home Assistant
 
 | Entity | Type | Notes |
