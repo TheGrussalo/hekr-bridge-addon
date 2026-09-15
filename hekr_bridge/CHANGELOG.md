@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.6.2
+
+### Fixed
+
+- No code changes - version-only bump. The CI workflow only builds a new image when its v<version> git tag doesn't already exist yet, as a way to avoid rebuilding unchanged versions. The 1.6.1 tag got created against the still-broken pre-Dockerfile-fix state (see 1.6.1's own entry below), so the fix commit that followed - still labelled 1.6.1 - never actually triggered a rebuild, leaving the broken image published under that tag despite the repo itself being correct. This bump forces a genuinely fresh build/tag/publish cycle from the current (correct) source.
+
 ## 1.6.1
 
 ### Fixed
