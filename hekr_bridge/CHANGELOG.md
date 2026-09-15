@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.6.1
+
+### Fixed
+
+- **1.6.0 was broken - crash-looped on startup for everyone who deployed it**, with ModuleNotFoundError: No module named 'smartconfig'. hekr_bridge.py was correctly updated to import the new module, but the Dockerfile was never updated to actually copy smartconfig.py into the built image alongside it - a packaging oversight caught immediately during live testing. Added the missing COPY smartconfig.py line. No code changes; this is a build-only fix.
 ## 1.6.0
 
 ### Added

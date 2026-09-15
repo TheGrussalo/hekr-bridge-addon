@@ -9,6 +9,7 @@ COPY requirements.txt /app/requirements.txt
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY hekr_bridge.py /app/hekr_bridge.py
+COPY smartconfig.py /app/smartconfig.py
 COPY run.sh /run.sh
 RUN chmod a+x /run.sh
 
